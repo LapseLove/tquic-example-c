@@ -39,8 +39,37 @@ typedef struct h3_conns{
     http3_conn_t *h3_conn;
 }h3_conns;
 
-const struct http3_methods_t h3_methods = {
+void h3_on_conn_goaway(void *ctx, uint64_t stream_id){
 
+}
+
+void h3_on_stream_data(void *ctx, uint64_t stream_id){
+
+}
+
+void h3_on_stream_finished(void *ctx, uint64_t stream_id){
+
+}
+
+void h3_on_stream_headers(void *ctx, uint64_t stream_id, const struct http3_headers_t *headers, bool fin){
+
+}
+
+void h3_on_stream_priority_update(void *ctx, uint64_t stream_id){
+
+}
+
+void h3_on_stream_reset(void *ctx, uint64_t stream_id, uint64_t error_code){
+
+}
+
+const struct http3_methods_t h3_methods = {
+    .on_conn_goaway = h3_on_conn_goaway,
+    .on_stream_data = h3_on_stream_data,
+    .on_stream_finished = h3_on_stream_finished,
+    .on_stream_headers = h3_on_stream_headers,
+    .on_stream_priority_update = h3_on_stream_priority_update,
+    .on_stream_reset = h3_on_stream_reset,
 };
 
 // A simple server that supports HTTP/0.9 over QUIC
