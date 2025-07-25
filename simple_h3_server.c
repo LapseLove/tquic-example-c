@@ -34,11 +34,6 @@
 #define READ_BUF_SIZE 4096
 #define MAX_DATAGRAM_SIZE 1200
 
-typedef struct h3_conns{
-    http3_config_t *h3_config;
-    http3_conn_t *h3_conn;
-}h3_conns;
-
 void h3_on_conn_goaway(void *ctx, uint64_t stream_id){
 
 }
@@ -81,7 +76,7 @@ struct simple_server {
     socklen_t local_addr_len;
     struct quic_tls_config_t *tls_config;
     struct ev_loop *loop;
-    h3_conns *head_conn;
+    http3_config_t *h3_config;
 };
 
 void server_on_conn_created(void *tctx, struct quic_conn_t *conn) {
@@ -90,10 +85,8 @@ void server_on_conn_created(void *tctx, struct quic_conn_t *conn) {
 
 void server_on_conn_established(void *tctx, struct quic_conn_t *conn) {
     fprintf(stderr, "connection established\n");
-    h3_conns *new_h3_conn;
-    new_h3_conn = malloc(sizeof(h3_conns));
-    new_h3_conn->h3_config = http3_config_new();
-    new_h3_conn->h3_conn = http3_conn_new(conn, new_h3_conn->h3_config);
+    struct simple_server *server = (struct simple_server *)tctx;
+    http3_conn_t *new_h3_conn = http3_conn_new(conn, server->h3_config);
     http3_conn_set_events_handler(conn, &h3_methods, new_h3_conn);
 }
 
@@ -308,7 +301,7 @@ int main(int argc, char *argv[]) {
     server.quic_endpoint = NULL;
     server.tls_config = NULL;
     server.loop = NULL;
-    server.head_conn = NULL;
+    server.h3_config = NULL;
     quic_config_t *config = NULL;
     int ret = 0;
 
@@ -321,7 +314,7 @@ int main(int argc, char *argv[]) {
         goto EXIT;
     }
 
-    // Create quic config.
+    // Create quic config and http3 config.
     config = quic_config_new();
     if (config == NULL) {
         ret = -1;
@@ -329,6 +322,7 @@ int main(int argc, char *argv[]) {
     }
     quic_config_set_max_idle_timeout(config, 5000);
     quic_config_set_recv_udp_payload_size(config, MAX_DATAGRAM_SIZE);
+    server.h3_config = http3_config_new();
 
     // Create and set tls config.
     const char *const protos[1] = {"http/0.9"};
