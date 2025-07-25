@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "tquic.h": "c",
+        "ssl.h": "c",
+        "tquic_def.h": "c"
+    }
+}
