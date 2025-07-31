@@ -34,6 +34,24 @@
 #define READ_BUF_SIZE 4096
 #define MAX_DATAGRAM_SIZE 1200
 
+// A simple server that supports HTTP/0.9 over QUIC
+struct simple_server {
+    struct quic_endpoint_t *quic_endpoint;
+    ev_timer timer;
+    int sock;
+    struct sockaddr_storage local_addr;
+    socklen_t local_addr_len;
+    struct quic_tls_config_t *tls_config;
+    struct ev_loop *loop;
+    http3_config_t *h3_config;
+
+};
+
+typedef struct h3_context{
+    http3_conn_t *h3_conn;
+    quic_conn_t *quic_conn;
+}h3_context;
+
 void h3_on_conn_goaway(void *ctx, uint64_t stream_id){
 
 }
@@ -67,17 +85,14 @@ const struct http3_methods_t h3_methods = {
     .on_stream_reset = h3_on_stream_reset,
 };
 
-// A simple server that supports HTTP/0.9 over QUIC
-struct simple_server {
-    struct quic_endpoint_t *quic_endpoint;
-    ev_timer timer;
-    int sock;
-    struct sockaddr_storage local_addr;
-    socklen_t local_addr_len;
-    struct quic_tls_config_t *tls_config;
-    struct ev_loop *loop;
-    http3_config_t *h3_config;
-};
+void try_new_h3_conn(void *tctx, struct quic_conn_t *conn){
+    struct simple_server *server = (struct simple_server *)tctx;
+    h3_context h3_context_new;
+    h3_context_new.h3_conn = http3_conn_new(conn, server->h3_config);
+    h3_context_new.quic_conn = conn;
+    http3_conn_set_events_handler(h3_context_new.h3_conn, &h3_methods, (http3_context_t)&h3_context_new);
+    quic_conn_set_context(conn, (void *)&h3_context_new);
+}
 
 void server_on_conn_created(void *tctx, struct quic_conn_t *conn) {
     fprintf(stderr, "new connection created\n");
@@ -85,37 +100,54 @@ void server_on_conn_created(void *tctx, struct quic_conn_t *conn) {
 
 void server_on_conn_established(void *tctx, struct quic_conn_t *conn) {
     fprintf(stderr, "connection established\n");
-    struct simple_server *server = (struct simple_server *)tctx;
-    http3_conn_t *new_h3_conn = http3_conn_new(conn, server->h3_config);
-    http3_conn_set_events_handler(conn, &h3_methods, new_h3_conn);
+    try_new_h3_conn(tctx, conn);
 }
 
 void server_on_conn_closed(void *tctx, struct quic_conn_t *conn) {
-    fprintf(stderr, "connection closed\n");
+    quic_conn_stats_t *stats = NULL;
+    stats = quic_conn_stats(conn);
+    if(stats == NULL){
+        fprintf(stderr, "failed to get stats\n");
+        return;
+    }
+    fprintf(stderr, "connection is closed. recv pkts: %lu, sent pkts: %lu, \
+            lost pkts: %lu, recv bytes: %lu, sent bytes: %lu, lost bytes: %lu", stats->recv_count, \
+        stats->sent_count, stats->lost_count, stats->recv_bytes, stats->sent_bytes, \
+    stats->lost_bytes);
+
 }
 
 void server_on_stream_created(void *tctx, struct quic_conn_t *conn,
                               uint64_t stream_id) {
     fprintf(stderr, "new stream created %ld\n", stream_id);
+    h3_context *check_conn_is_established = NULL;
+    uint8_t *negotiated_proto = NULL;
+    size_t negotiated_proto_len = NULL;
+
+    //Check whether the protocol is h3
+    quic_conn_application_proto(conn, &negotiated_proto, &negotiated_proto_len);
+    if(strncmp(negotiated_proto, "h3", negotiated_proto_len) != 0){
+        const char *reason = "protocol fault";
+        fprintf(stderr, "%s\n", reason);
+        quic_conn_close(conn, false, 12, reason, sizeof(reason));
+        return;
+    }
+
+    check_conn_is_established = (h3_context *)quic_conn_context(conn);
+    if(check_conn_is_established == NULL){
+        try_new_h3_conn(tctx, conn);
+    }
 }
 
 void server_on_stream_readable(void *tctx, struct quic_conn_t *conn,
                                uint64_t stream_id) {
-    static uint8_t buf[READ_BUF_SIZE];
-    bool fin = false;
-    ssize_t r = quic_stream_read(conn, stream_id, buf, READ_BUF_SIZE, &fin);
-    if (r < 0) {
-        fprintf(stderr, "stream[%ld] read error\n", stream_id);
+    h3_context *ctx = NULL;
+    ctx = (h3_context *)quic_conn_context(conn);
+    if(ctx == NULL){
+        fprintf(stderr, "failed to get relevant quic connection context\n");
         return;
     }
-
-    printf("Got request:\n");
-    printf("%.*s\n", (int)r, buf);
-
-    if (fin) {
-        const char *resp = "HTTP/0.9 200 OK\n";
-        quic_stream_write(conn, stream_id, (uint8_t *)resp, strlen(resp), true);
-    }
+    http3_conn_process_streams(ctx->h3_conn, ctx->quic_conn);
 }
 
 void server_on_stream_writable(void *tctx, struct quic_conn_t *conn,
@@ -325,7 +357,7 @@ int main(int argc, char *argv[]) {
     server.h3_config = http3_config_new();
 
     // Create and set tls config.
-    const char *const protos[1] = {"http/0.9"};
+    const char *const protos[2] = {"http/0.9", "h3"};
     server.tls_config = quic_tls_config_new_server_config(
         "cert.crt", "cert.key", protos, 1, true);
     if (server.tls_config == NULL) {
@@ -377,3 +409,4 @@ EXIT:
 
     return ret;
 }
+
